@@ -241,9 +241,13 @@ if (process.argv[1] && process.argv[1].endsWith('graph-find.mjs')) {
     process.exit(problems.length || gone.length || stale.length ? 1 : 0);
   }
 
-  // 동점이면 최신 우선 — 아래쪽은 그 뒤에 바뀌었을 수 있다.
+  // 동점이면 살아있는 기록 먼저, 그다음 최신.
+  // ⛔ 대체된 기록이 1위를 차지하면 새 세션이 낡은 값을 그대로 답한다 — --check 의 「용어 선점」은
+  //    용어 키가 겹칠 때만 잡아서, 자유 검색어로 물으면 이 구멍으로 빠졌다(2026-09-08 실측).
   const ranked = recs.map((r) => ({ r, s: score(r, args) })).filter((x) => x.s > 0)
-    .sort((a, b) => b.s - a.s || String(b.r.date).localeCompare(String(a.r.date)));
+    .sort((a, b) => b.s - a.s
+      || (a.r.validTo ? 1 : 0) - (b.r.validTo ? 1 : 0)
+      || String(b.r.date).localeCompare(String(a.r.date)));
   if (!ranked.length) {
     console.log(`「${args.join(' ')}」로 걸리는 과거 요구가 없다 (누적 ${recs.length}건).`);
     console.log('⇒ 새 영역이다. spec-map.md 어휘 다리와 trace.mjs 로 시작한다.');
