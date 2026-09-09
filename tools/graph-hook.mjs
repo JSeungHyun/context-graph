@@ -97,13 +97,19 @@ function emit(prompt) {
 
 const INDEX_CAP = 150;   // 색인은 선형으로 자란다. 이 선을 넘으면 최근 것만 준다
 const BOOKKEEPING = /^TODO 갱신|^TODO:/;
+const FALLBACK_MIN = 2;  // 최고점수가 이 값 이하면 색인도 내지 않는다 (근거는 fallbackIndex 주석)
 
 // 2단 — 제목 + 용어만의 압축 색인. 모델이 의미로 고르고, 상세는 graph-find 로 스스로 판다.
 // ⭐ 용어를 같이 줘야 맞는다 — 제목만 주면 그럴듯한 이웃을 고른다(실측: 제목만 0/2 → 용어 포함 2/2).
 // ⛔ 점수로 자르지 않는다 — 폴백의 존재 이유가 「점수가 못 잡은 것」이라 같은 점수로 재면 정답을 버린다.
 //    실측 2026-09-09: 덤프 질의당 128건 중 중앙 98건이 점수 0 이고, 상위 40 컷은 그것을 통째로 날린다.
+// ⛔ 신호가 약하면 색인도 내지 않는다. 실측 2026-09-09 — 실제 타이핑 프롬프트 192건에서 s<=2 로
+//    침묵되는 23건이 전부 진행 발화(「계속 진행」류)이거나 그래프에 답이 없는 질의(식별자가 기록에 0건·
+//    스택트레이스)였다. 평균 주입 5,823→4,526자(-22%), 적중 137건 불변.
+//    ⛔ s<=3 으로 내리지 않는다 — 그래프에 답이 있는 업무 질의가 침묵된다.
+//    ⚠️ 이 문턱은 **티켓 제목이 아니라 typed 프롬프트**로 재야 한다 — 분포가 달라 판정이 뒤집힌다.
 function fallbackIndex(all, recs, hits) {
-  if (!hits.length) return;   // 걸린 게 하나도 없으면 침묵한다 — 무관한 프롬프트에 전건을 던지지 않는다
+  if (!hits.length || hits[0].s <= FALLBACK_MIN) return;
   // ⭐ 대체된 기록은 뺀다 — 후속이 색인에 반드시 있으므로 재현율 손실 0 (실측: orphan 0건, 색인 -30%)
   const superseded = new Set(all.filter((r) => r.supersedes).map((r) => r.supersedes));
   const use = recs.slice(-INDEX_CAP).filter((r) => !superseded.has(r.req));
