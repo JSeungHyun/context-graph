@@ -6,7 +6,9 @@
 
 ```
 요구 도착  →  훅이 조회를 대신 돌려 상위 2건 주입   →  (있으면 시작점이 공짜)
-              못 찾으면 압축 색인을 줘서 모델이 고름  →  그래도 없으면 평소대로 코드 탐색
+              걸렸어도 답이 아니면 그렇다고 말하고    →  평소대로 코드 탐색
+              확신이 없으면 압축 색인으로 모델이 고름 →  그래도 없으면 평소대로 코드 탐색
+              하나도 안 걸리면 아무것도 넣지 않는다   →  ⛔ 그래프는 코드 탐색을 막지 않는다
 대화 중    →  사용자가 쓴 말이 0건이면 알아낸 뒤 graph-alias 로 그 말을 등록
 작업 종료  →  graph-append 로 간선 기록
 주기적으로 →  --check 무결성 · --promote 용어 승격 · graph-view 열람
@@ -77,7 +79,7 @@ C:\Project\context-graph\SETUP.md 를 읽고 이 프로젝트에 적용해줘
 | `tools/graph-append.mjs` | 기록 추가 (stdin JSON · JSONL 다건 가능) |
 | `tools/graph-find.mjs` | 조회 — 용어·파일 양방향, `--with` 2홉, `--check` 무결성, `--promote` 승격 후보 |
 | `tools/graph-alias.mjs` | ⭐ 대화 중 알아낸 「사용자의 말 → 실체」를 한 줄로 기록 (별도 저장소 아님 — 같은 JSONL) |
-| `tools/graph-hook.mjs` | ⚠️ 선택 — `UserPromptSubmit` 훅. **1단** 키워드 상위 2건, 못 찾으면 **2단** 압축 색인 |
+| `tools/graph-hook.mjs` | ⚠️ 선택 — `UserPromptSubmit` 훅. **1단** 키워드 상위 2건 → **2단** 압축 색인 → 안 걸리면 **침묵**. 두 단 모두 「답이 아니면 코드로 가라」를 명시한다 |
 | `tools/graph-view.mjs` | 전체를 브라우저 한 장(HTML)으로 굽는다. 데이터를 박지 않고 매번 생성 |
 | `tools/commit-index.mjs` | 커밋에서 어휘·쌍 비대칭·열지도 추출 (⚠️ 한국어 불용어 하드코딩) |
 | `tools/spec-toc.mjs` | 큰 마크다운의 `##` 절별 라인 범위 (부분 로드용) |

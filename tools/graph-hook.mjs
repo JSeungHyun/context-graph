@@ -57,7 +57,10 @@ function emit(prompt) {
   if (!ko.size && !ids.length) return;
 
   // 경로 가중은 scoreDetail() 안에 있다 — 훅과 CLI 가 같은 랭킹을 쓴다.
-  const recs = load(STORE);
+  // ⛔ 사무 기록(TODO 갱신)은 자동주입 대상이 아니다 — 실측 600질의에서 23회 1위를 차지해 도메인 정답을 밀어냈다.
+  //    CLI graph-find 는 그대로 둔다 — 거기서는 사용자가 명시적으로 찾는 것이다.
+  const all = load(STORE);
+  const recs = all.filter((r) => !BOOKKEEPING.test(r.req));
   const hits = recs.map((r) => ({ r, ...scoreDetail(r, [...ko, ...ids]) }))
     .filter((x) => x.s > 0).sort((a, b) => b.s - a.s || (b.r.date || '').localeCompare(a.r.date || ''));
 
@@ -73,11 +76,14 @@ function emit(prompt) {
   const top = hits[0];
   const idHit = top && ids.length > 0 && scoreDetail(top.r, ids).s > 0;
   const confident = top && (top.exact >= 1 || idHit || top.s >= 5);
-  if (!confident) { fallbackIndex(recs, hits); return; }
+  if (!confident) { fallbackIndex(all, recs, hits); return; }
 
+  // ⛔ 적중 경로에도 탈출구를 둔다 — 「걸렸다」가 「답이다」는 아니다. 광역 용어사전이 1위를 차지하는 일이
+  //    흔해서(실측: 12개 기록이 적중의 71%), 탈출구가 없으면 관련만 있는 카드로 답을 지어낸다.
   const out = [`[그래프 자동조회] 유사 기록 ${hits.length}건 — 상위 ${Math.min(MAX, hits.length)}건만 표시.`,
     `⚠️ 아래는 과거 작업에서 실측한 것이다. 함정과 「용어 → 실체」 매핑 둘 다 근거로 쓴다 — 추측으로 대체하지 않는다.`,
-    `⛔ 값이 「제거됨」·「바뀜」으로 시작하면 그게 답이다. 코드에 안 보인다고 「모름」이라 하지 않는다.`];
+    `⛔ 값이 「제거됨」·「바뀜」으로 시작하면 그게 답이다. 코드에 안 보인다고 「모름」이라 하지 않는다.`,
+    `⭐ 다만 위 기록이 이 질문에 답하지 않으면 그렇다고 말하고 평소대로 코드를 탐색한다 — 걸린 것이 답이라는 뜻은 아니다.`];
   for (const { r, s } of hits.slice(0, MAX)) {
     out.push(`· [${s}] ${r.date} ${r.req}`);
     // ⭐ 함정을 맨 앞에 둔다 — 카드 끝에 두면 묻혀서 모델이 추측으로 답한다(2026-09-04 실측)
@@ -90,12 +96,17 @@ function emit(prompt) {
 }
 
 const INDEX_CAP = 150;   // 색인은 선형으로 자란다. 이 선을 넘으면 최근 것만 준다
+const BOOKKEEPING = /^TODO 갱신|^TODO:/;
 
 // 2단 — 제목 + 용어만의 압축 색인. 모델이 의미로 고르고, 상세는 graph-find 로 스스로 판다.
 // ⭐ 용어를 같이 줘야 맞는다 — 제목만 주면 그럴듯한 이웃을 고른다(실측: 제목만 0/2 → 용어 포함 2/2).
-function fallbackIndex(recs, hits) {
-  if (!recs.length) return;
-  const use = recs.slice(-INDEX_CAP);
+// ⛔ 점수로 자르지 않는다 — 폴백의 존재 이유가 「점수가 못 잡은 것」이라 같은 점수로 재면 정답을 버린다.
+//    실측 2026-09-09: 덤프 질의당 128건 중 중앙 98건이 점수 0 이고, 상위 40 컷은 그것을 통째로 날린다.
+function fallbackIndex(all, recs, hits) {
+  if (!hits.length) return;   // 걸린 게 하나도 없으면 침묵한다 — 무관한 프롬프트에 전건을 던지지 않는다
+  // ⭐ 대체된 기록은 뺀다 — 후속이 색인에 반드시 있으므로 재현율 손실 0 (실측: orphan 0건, 색인 -30%)
+  const superseded = new Set(all.filter((r) => r.supersedes).map((r) => r.supersedes));
+  const use = recs.slice(-INDEX_CAP).filter((r) => !superseded.has(r.req));
   const lines = use.map((r) => {
     const keys = Array.isArray(r.terms) ? r.terms : Object.keys(r.terms || {});
     return `${r.date} ${r.req}${keys.length ? `  [용어: ${keys.join(', ')}]` : ''}`;
