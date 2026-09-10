@@ -37,13 +37,22 @@ export function scoreDetail(rec, queries) {
     (rec.tables || []).join(' ')].join(' ').toLowerCase();
   // ⛔ files·note 가 건초더미에서 빠져 있었다 — 파일명으로 물으면 0건이 나오고,
   //    「그 파일을 만지진 않았지만 함정을 아는」 기록이 통째로 누락됐다(2026-09-04 실측).
-  const wide = [(rec.files || []).join(' '), rec.note || ''].join(' ').toLowerCase();
+  // ⛔ 둘을 같은 2점으로 묶었더니 note 에 낱말이 스친 무관한 기록이 용어 키를 가진 정본을 눌렀다.
+  //    2026-09-09 에 「조직 추가」 정본이 밀려 이미 기록된 답을 못 찾고 재조사해 반대 결론을 냈다.
+  //    ⇒ 경로는 2점(1건만 맞아도 확실), note 스침은 1점(용어 부분일치와 동급)으로 가른다.
+  const paths = (rec.files || []).join(' ').toLowerCase();
+  const noteTxt = (rec.note || '').toLowerCase();
   let s = 0, exact = 0, body = 0, near = 0;
   for (const q of queries) {
     const t = q.toLowerCase();
-    if (keys.some((x) => x.toLowerCase() === t)) { s += 3; exact++; }   // 용어 정확 일치
+    // ⭐ 공백을 무시하고 비교한다 — 훅 토크나이저는 공백 토큰을 못 만드는데 살아있는 용어키 300/439(68%)가
+    //    공백을 포함해 정확일치(+3·확신 게이트)를 영영 못 받고 있었다(2026-09-10 실측).
+    //    용어키→소유 기록 1위 56%→76%, req 자기검색 103/106 불변. 채점 가중이 아니라 판정 정규화다.
+    const tn = t.replace(/\s+/g, '');
+    if (keys.some((x) => x.toLowerCase().replace(/\s+/g, '') === tn)) { s += 3; exact++; }   // 용어 정확 일치
+    else if (paths.includes(t)) { s += 2; near++; }                     // 경로가 직접 지목
     else if (hay.includes(t)) { s += 1; body++; }                       // 본문·매핑값·테이블 포함
-    else if (wide.includes(t)) { s += 2; near++; }                      // 경로·함정이 직접 지목
+    else if (noteTxt.includes(t)) { s += 1; body++; }                   // 함정 본문에 스침
   }
   return { s, exact, body, near };
 }

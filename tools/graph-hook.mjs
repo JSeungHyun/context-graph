@@ -59,8 +59,13 @@ function emit(prompt) {
   // 경로 가중은 scoreDetail() 안에 있다 — 훅과 CLI 가 같은 랭킹을 쓴다.
   // ⛔ 사무 기록(TODO 갱신)은 자동주입 대상이 아니다 — 실측 600질의에서 23회 1위를 차지해 도메인 정답을 밀어냈다.
   //    CLI graph-find 는 그대로 둔다 — 거기서는 사용자가 명시적으로 찾는 것이다.
+  // ⛔ 대체된(supersedes 당한) 기록도 1단·2단 모두에서 뺀다 — 낡은 답을 현재 사실로 내보내던 구멍.
+  //    실측 2026-09-10(티켓 600건): 1단 확신 453건 중 대체 기록이 1위 97건·상위2 186건(41%),
+  //    아침에 대체시킨 기록 1건이 68회 1위로 나갔다. 제외 후 0·0, req 자기검색 103/106 불변.
+  //    ⭐ 후속 기록이 반드시 있으므로 재현율 손실 0 (실측: orphan 0건).
   const all = load(STORE);
-  const recs = all.filter((r) => !BOOKKEEPING.test(r.req));
+  const superseded = new Set(all.filter((r) => r.supersedes).map((r) => r.supersedes));
+  const recs = all.filter((r) => !BOOKKEEPING.test(r.req) && !superseded.has(r.req));
   const hits = recs.map((r) => ({ r, ...scoreDetail(r, [...ko, ...ids]) }))
     .filter((x) => x.s > 0).sort((a, b) => b.s - a.s || (b.r.date || '').localeCompare(a.r.date || ''));
 
@@ -76,7 +81,7 @@ function emit(prompt) {
   const top = hits[0];
   const idHit = top && ids.length > 0 && scoreDetail(top.r, ids).s > 0;
   const confident = top && (top.exact >= 1 || idHit || top.s >= 5);
-  if (!confident) { fallbackIndex(all, recs, hits); return; }
+  if (!confident) { fallbackIndex(recs, hits); return; }
 
   // ⛔ 적중 경로에도 탈출구를 둔다 — 「걸렸다」가 「답이다」는 아니다. 광역 용어사전이 1위를 차지하는 일이
   //    흔해서(실측: 12개 기록이 적중의 71%), 탈출구가 없으면 관련만 있는 카드로 답을 지어낸다.
@@ -108,11 +113,10 @@ const FALLBACK_MIN = 2;  // 최고점수가 이 값 이하면 색인도 내지 �
 //    스택트레이스)였다. 평균 주입 5,823→4,526자(-22%), 적중 137건 불변.
 //    ⛔ s<=3 으로 내리지 않는다 — 그래프에 답이 있는 업무 질의가 침묵된다.
 //    ⚠️ 이 문턱은 **티켓 제목이 아니라 typed 프롬프트**로 재야 한다 — 분포가 달라 판정이 뒤집힌다.
-function fallbackIndex(all, recs, hits) {
+function fallbackIndex(recs, hits) {
   if (!hits.length || hits[0].s <= FALLBACK_MIN) return;
-  // ⭐ 대체된 기록은 뺀다 — 후속이 색인에 반드시 있으므로 재현율 손실 0 (실측: orphan 0건, 색인 -30%)
-  const superseded = new Set(all.filter((r) => r.supersedes).map((r) => r.supersedes));
-  const use = recs.slice(-INDEX_CAP).filter((r) => !superseded.has(r.req));
+  // ⭐ recs 는 이미 사무 기록·대체 기록이 빠진 풀이다(emit 상단) — 색인 -30% 는 그 필터의 효과
+  const use = recs.slice(-INDEX_CAP);
   const lines = use.map((r) => {
     const keys = Array.isArray(r.terms) ? r.terms : Object.keys(r.terms || {});
     return `${r.date} ${r.req}${keys.length ? `  [용어: ${keys.join(', ')}]` : ''}`;
