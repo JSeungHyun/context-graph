@@ -135,10 +135,14 @@ export function check(recs, { fileExists } = {}) {
 
   // ⛔ 같은 용어를 여러 기록이 가질 때 과거가 1위면 새 세션이 낡은 값을 그대로 답한다(2026-09-05 실측).
   //    「값이 낡았는지」는 기계가 못 정하지만 「최신이 1위인지」는 계산된다 — 거기까지만 경고한다.
+  // ⭐ scoreDetail 과 같은 정규화(소문자·공백 제거)로 묶는다 — 훅이 「종합 등급」과 「종합등급」을 같은 키로
+  //    보게 된 뒤(2026-09-10 V8), 여기만 원문으로 묶으면 그 쌍이 중복 용어로 안 세어져 선점 검사가 비켜간다.
+  //    실측 2026-09-11: 살아있는 기록 간 공백만 다른 키 쌍 1개(줄58↔줄110) — 지금은 최신이 1위라 잠복 상태.
   const owners = new Map();
   for (const r of recs) for (const k of termKeys(r)) {
-    if (!owners.has(k)) owners.set(k, []);
-    owners.get(k).push(r);
+    const nk = k.toLowerCase().replace(/\s+/g, '');
+    if (!owners.has(nk)) owners.set(nk, []);
+    owners.get(nk).push(r);
   }
   const stale = [];
   for (const [k, v] of owners) {
