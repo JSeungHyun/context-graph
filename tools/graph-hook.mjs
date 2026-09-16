@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // UserPromptSubmit 훅 — 질문이 들어올 때마다 graph-find 를 대신 돌려 과거 기록을 컨텍스트에 주입한다.
 // ⭐ 탐색 1번 단계를 모델의 규율에 맡기지 않는 것이 목적이다.
-import { load, scoreDetail, STOP } from './graph-find.mjs';
+import { load, scoreDetail, sup, tokenizeKo, tokenizeIds } from './graph-find.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -10,14 +10,7 @@ const STORE = join(dirname(fileURLToPath(import.meta.url)), 'graph', 'requests.j
 
 const MAX = 2;   // 프롬프트마다 붙는 비용이므로 상위 2건만
 
-// ⛔ 조사를 떼지 않으면 「재무지표가」라 용어 정확일치(+3)가 영영 안 걸린다(2026-09-04 실측).
-// ⭐ 원형과 어근을 둘 다 넣는다 — 「태블로」처럼 끝이 조사를 닮은 말을 잘못 떼도 손해가 없다.
-const JOSA = /(으로|에서|부터|까지|에게|한테|이나|라도|는|은|를|을|가|이|의|에|도|만|과|와|랑|로|나)$/;
-function addTok(set, t) {
-  if (t.length >= 2 && !STOP.has(t)) set.add(t);
-  const bare = t.replace(JOSA, '');
-  if (bare !== t && bare.length >= 2 && !STOP.has(bare)) set.add(bare);
-}
+// ⭐ 토크나이저(조사 떼기·공백 결합·어근·식별자)는 graph-find.mjs 의 tokenizeKo/tokenizeIds 다 — CLI 와 같은 것을 쓴다(2026-09-14 이동).
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -28,32 +21,8 @@ process.stdin.on('end', () => {
 });
 
 function emit(prompt) {
-  const ko = new Set();
-  // ⛔ [가-힣]{2,} 만 쓰면 숫자·영문이 섞인 말이 통째로 사라진다 — 1단·2단·EAP2·BY2627·3R·SKU수
-  //    (2026-09-05 실측: 「1단과 2단」 질의에서 두 단어가 0토큰이 됐다).
-  //    숫자·영문이 붙은 덩어리를 먼저 뽑고, 순수 한글도 따로 뽑는다.
-  for (const raw of prompt.match(/[0-9A-Za-z]+[가-힣]+|[가-힣]+[0-9A-Za-z]+[가-힣]*/g) || []) addTok(ko, raw);
-  for (const raw of prompt.match(/[가-힣]{2,}/g) || []) addTok(ko, raw);
-  // ⭐ 공백만 다른 형태 — 「목표 수립」과 「목표수립」은 같은 말이다.
-  //    규칙으로 만들 수 있으니 저장 쪽을 늘리지 않고 질의에서 만든다. 색인 비용 0.
-  for (const phrase of prompt.split(/[^가-힣\s]+/)) {
-    const parts = phrase.trim().split(/\s+/).filter((w) => /^[가-힣]{2,}$/.test(w));
-    for (let i = 0; i < parts.length; i++) {
-      for (let n = 2; n <= 3 && i + n <= parts.length; n++) {
-        const joined = parts.slice(i, i + n).join('');
-        if (joined.length <= 12) addTok(ko, joined);
-      }
-    }
-  }
-  // ⭐ 어근을 같이 넣는다 — 부분일치라 「문의하기」는 「문의처」에 안 걸린다
-  for (const t of [...ko]) if (t.length >= 3 && !STOP.has(t.slice(0, 2))) ko.add(t.slice(0, 2));
-  // ⭐ 파일명·식별자는 한글 토큰에 안 걸리고 score() 의 건초더미에도 파일 경로가 없다 — 경로는 따로 본다
-  // ⛔ 길이 5 이상만 받으면 ESG·SAP·EAP 같은 3글자 약어가 통째로 사라진다(2026-09-05 실측: ESG 질의가 0토큰).
-  //    대문자 약어는 2자부터, 소문자 섞인 일반 단어는 5자부터 — 흔한 영어 낱말이 노이즈가 되는 건 막는다.
-  const ids = [...new Set([
-    ...(prompt.match(/\b[A-Z][A-Z0-9]{1,}\b/g) || []),                       // 대문자 약어 ESG · SAP · EAP2
-    ...(prompt.match(/[A-Za-z_][A-Za-z0-9_.\-]{3,}/g) || []).filter((t) => t.length >= 5),
-  ])];
+  const ko = tokenizeKo(prompt);
+  const ids = tokenizeIds(prompt);
   if (!ko.size && !ids.length) return;
 
   // 경로 가중은 scoreDetail() 안에 있다 — 훅과 CLI 가 같은 랭킹을 쓴다.
@@ -64,7 +33,7 @@ function emit(prompt) {
   //    아침에 대체시킨 기록 1건이 68회 1위로 나갔다. 제외 후 0·0, req 자기검색 103/106 불변.
   //    ⭐ 후속 기록이 반드시 있으므로 재현율 손실 0 (실측: orphan 0건).
   const all = load(STORE);
-  const superseded = new Set(all.filter((r) => r.supersedes).map((r) => r.supersedes));
+  const superseded = new Set(all.flatMap(sup));
   const recs = all.filter((r) => !BOOKKEEPING.test(r.req) && !superseded.has(r.req));
   const hits = recs.map((r) => ({ r, ...scoreDetail(r, [...ko, ...ids]) }))
     .filter((x) => x.s > 0).sort((a, b) => b.s - a.s || (b.r.date || '').localeCompare(a.r.date || ''));
@@ -81,23 +50,54 @@ function emit(prompt) {
   const top = hits[0];
   const idHit = top && ids.length > 0 && scoreDetail(top.r, ids).s > 0;
   const confident = top && (top.exact >= 1 || idHit || top.s >= 5);
-  if (!confident) { fallbackIndex(recs, hits); return; }
+  if (!confident) { fallbackIndex(recs, hits, [...ko, ...ids]); return; }
 
   // ⛔ 적중 경로에도 탈출구를 둔다 — 「걸렸다」가 「답이다」는 아니다. 광역 용어사전이 1위를 차지하는 일이
   //    흔해서(실측: 12개 기록이 적중의 71%), 탈출구가 없으면 관련만 있는 카드로 답을 지어낸다.
-  const out = [`[그래프 자동조회] 유사 기록 ${hits.length}건 — 상위 ${Math.min(MAX, hits.length)}건만 표시.`,
+  // ⭐ 정본(req 가 「정본:」으로 시작)이 1위면 그 카드 하나가 답이다 — 2번째 카드를 붙이지 않는다.
+  //    실측 2026-09-14: 절차 질의에서 정본 + 무관한 광역 용어사전 카드로 7,128자가 나갔다. 정본 카드는 그 자체가 절차라 길다.
+  const take = /^정본:/.test(top.r.req) ? 1 : MAX;
+  const out = [`[그래프 자동조회] 유사 기록 ${hits.length}건 — 상위 ${Math.min(take, hits.length)}건만 표시.`,
     `⚠️ 아래는 과거 작업에서 실측한 것이다. 함정과 「용어 → 실체」 매핑 둘 다 근거로 쓴다 — 추측으로 대체하지 않는다.`,
     `⛔ 값이 「제거됨」·「바뀜」으로 시작하면 그게 답이다. 코드에 안 보인다고 「모름」이라 하지 않는다.`,
     `⭐ 다만 위 기록이 이 질문에 답하지 않으면 그렇다고 말하고 평소대로 코드를 탐색한다 — 걸린 것이 답이라는 뜻은 아니다.`];
-  for (const { r, s } of hits.slice(0, MAX)) {
+  for (const { r, s } of hits.slice(0, take)) {
     out.push(`· [${s}] ${r.date} ${r.req}`);
     // ⭐ 함정을 맨 앞에 둔다 — 카드 끝에 두면 묻혀서 모델이 추측으로 답한다(2026-09-04 실측)
     if (r.note) out.push(`    ⚠️ 함정: ${r.note}`);
     for (const [k, v] of Object.entries(Array.isArray(r.terms) ? {} : r.terms || {})) out.push(`    ${k} → ${v}`);
     for (const f of (r.files || []).slice(0, 6)) out.push(`    ${f}`);
   }
+  out.push(...openWork(recs, [...ko, ...ids], hits.slice(0, take).map((h) => h.r)));
   out.push(`더 볼 것: node tools/graph-find.mjs <어근>  (어근은 짧게, 여러 개)`);
   console.log(out.join('\n'));
+}
+
+// ⛔ 열린 작업(보류·미구현·중단)은 랭킹으로 닿지 않는다 — 광역 정본이 도메인 낱말을 독점한다.
+//    실측 2026-09-15: 「설계까지 해두고 사용자 지시로 멈춘」 보류 기록이 **그 작업을 재개하는 요청**에서 10위였다.
+//    훅은 1~2건, CLI 는 5건만 보여주므로 닿을 방법이 없었고, 기록이 있는데 못 꺼내 세션 로그를 3분 36초 뒤졌다.
+// ⭐ 그래서 점수가 아니라 **상태**로 붙인다 — 순위 밖이어도 정확일치 1개면 낸다. 랭킹은 건드리지 않는다
+//    (AGENTS.md §4: 채점 변형 4종은 자기검색을 무너뜨려 전부 기각됐다).
+// ⛔ 표식은 `⏸` 하나로만 본다. 낱말(미구현·보류)로 넓히면 3건 중 2건이 오탐이었다(실측 2026-09-15) —
+//    「미구현 제안」처럼 절차는 끝났는데 곁가지가 안 된 정본, 스키마 제안이 보류된 메타 기록이 딸려 온다.
+//    ⭐ 표식을 빠뜨리면 조용히 무력해지므로 `graph-find --check` 가 「표식 누락」으로 잡는다.
+// ⛔ 게이트는 점수다. 용어 정확일치(exact>=1)로 재 봤더니 **놓쳤던 바로 그 사례를 못 잡았다**(실측 2026-09-15:
+//    exact 0 · 점수 11) — 보류 기록의 용어 키는 대개 긴 복합어라 사람이 쓴 프롬프트와 정확히 겹칠 일이 없다.
+// ⭐ 문턱 5 는 훅의 확신 판정과 같은 숫자다(위 confident). 놓쳤던 프롬프트가 11점이라 여유가 있고,
+//    소음은 티켓 제목 605건 중 3.0% · 실제 typed 프롬프트 240건 중 12.5%다(열린 작업 2건 기준).
+// ⛔ `note` 의 **맨 앞**만 본다 — 본문 어디서나 찾으면 이 규약을 설명하는 기록이 스스로 걸린다(2026-09-15 실측).
+const OPEN_MIN = 5;
+export const isOpen = (r) => (r.note || '').startsWith('⏸');
+function openWork(recs, toks, shown = []) {
+  const open = recs.filter((r) => !shown.includes(r) && isOpen(r) && scoreDetail(r, toks).s >= OPEN_MIN);
+  if (!open.length) return [];
+  const out = [`⏸ 열린 작업 ${open.length}건 — 이 주제에 **하다 만 기록**이 있다. 다시 조사하기 전에 이것부터 편다.`];
+  for (const r of open) {
+    out.push(`  ⏸ ${r.date} ${r.req}`);
+    // ⭐ 앞머리만 준다 — 「어디까지 했고 왜 멈췄나」가 note 앞에 온다. 나머지는 모델이 graph-find 로 판다.
+    if (r.note) out.push(`     ⚠️ ${r.note.slice(0, 240)}${r.note.length > 240 ? ' …(전문: graph-find)' : ''}`);
+  }
+  return out;
 }
 
 const INDEX_CAP = 150;   // 색인은 선형으로 자란다. 이 선을 넘으면 최근 것만 준다
@@ -113,7 +113,7 @@ const FALLBACK_MIN = 2;  // 최고점수가 이 값 이하면 색인도 내지 �
 //    스택트레이스)였다. 평균 주입 5,823→4,526자(-22%), 적중 137건 불변.
 //    ⛔ s<=3 으로 내리지 않는다 — 그래프에 답이 있는 업무 질의가 침묵된다.
 //    ⚠️ 이 문턱은 **티켓 제목이 아니라 typed 프롬프트**로 재야 한다 — 분포가 달라 판정이 뒤집힌다.
-function fallbackIndex(recs, hits) {
+function fallbackIndex(recs, hits, toks) {
   if (!hits.length || hits[0].s <= FALLBACK_MIN) return;
   // ⭐ recs 는 이미 사무 기록·대체 기록이 빠진 풀이다(emit 상단) — 색인 -30% 는 그 필터의 효과
   const use = recs.slice(-INDEX_CAP);
@@ -129,6 +129,7 @@ function fallbackIndex(recs, hits) {
     `⛔ 억지로 고르지 않는다 — 관련 없으면 색인을 무시하고 평소대로 코드를 탐색한다.`,
     `⭐ 맞는 항목이 보이면 그 용어로 상세를 판다: node tools/graph-find.mjs <용어>`,
     `⭐ 사용자가 쓴 표현이 아래 용어에 없으면, 알아낸 뒤 그 표현을 용어 키로 기록한다: node tools/graph-alias.mjs <표현> "<실체>"`,
+    ...openWork(recs, toks),
     ...lines,
   ].join('\n'));
 }

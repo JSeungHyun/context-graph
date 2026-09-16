@@ -5,6 +5,7 @@
 //   node tools/graph-find.mjs --files GoalSettingDao      # 파일 경로로 역방향 조회 (1홉)
 //   node tools/graph-find.mjs --with  goal_popup_set      # 이 파일과 같이 만지게 되는 파일 (2홉)
 //   node tools/graph-find.mjs --check                     # 대체 사슬·경로 무결성 검증
+//   node tools/graph-find.mjs <용어…> --all               # 대체된(낡은) 기록까지 검색에 포함
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -26,6 +27,47 @@ export const STOP = new Set(['수정', '변경', '추가', '관련', '기능', '
 // terms 는 객체({현업어: 시스템어}) 또는 배열이다. 둘 다 다룬다.
 const termKeys = (r) => (Array.isArray(r.terms) ? r.terms : Object.keys(r.terms || {}));
 const termPairs = (r) => (Array.isArray(r.terms) ? [] : Object.entries(r.terms || {}));
+// ⭐ supersedes 는 문자열 1개 또는 배열이다 — 조각 여러 건을 정본 1건으로 통합할 때 배열을 쓴다(2026-09-14).
+export const sup = (r) => [].concat(r.supersedes || []).filter(Boolean);
+
+// ⭐ 훅과 CLI 가 같은 토크나이저를 쓴다 — 훅(graph-hook.mjs)에서 그대로 옮겨 왔다(2026-09-14).
+// ⛔ 조사를 떼지 않으면 「재무지표가」라 용어 정확일치(+3)가 영영 안 걸린다(2026-09-04 실측).
+// ⭐ 원형과 어근을 둘 다 넣는다 — 「태블로」처럼 끝이 조사를 닮은 말을 잘못 떼도 손해가 없다.
+const JOSA = /(으로|에서|부터|까지|에게|한테|이나|라도|는|은|를|을|가|이|의|에|도|만|과|와|랑|로|나)$/;
+function addTok(set, t) {
+  if (t.length >= 2 && !STOP.has(t)) set.add(t);
+  const bare = t.replace(JOSA, '');
+  if (bare !== t && bare.length >= 2 && !STOP.has(bare)) set.add(bare);
+}
+export function tokenizeKo(prompt) {
+  const ko = new Set();
+  // ⛔ [가-힣]{2,} 만 쓰면 숫자·영문이 섞인 말이 통째로 사라진다 — 1단·2단·EAP2·BY2627·3R·SKU수
+  //    (2026-09-05 실측: 「1단과 2단」 질의에서 두 단어가 0토큰이 됐다). 섞인 덩어리를 먼저, 순수 한글을 따로 뽑는다.
+  for (const raw of prompt.match(/[0-9A-Za-z]+[가-힣]+|[가-힣]+[0-9A-Za-z]+[가-힣]*/g) || []) addTok(ko, raw);
+  for (const raw of prompt.match(/[가-힣]{2,}/g) || []) addTok(ko, raw);
+  // ⭐ 공백만 다른 형태 — 「목표 수립」과 「목표수립」은 같은 말이다. 저장 쪽을 늘리지 않고 질의에서 만든다. 색인 비용 0.
+  for (const phrase of prompt.split(/[^가-힣\s]+/)) {
+    const parts = phrase.trim().split(/\s+/).filter((w) => /^[가-힣]{2,}$/.test(w));
+    for (let i = 0; i < parts.length; i++) {
+      for (let n = 2; n <= 3 && i + n <= parts.length; n++) {
+        const joined = parts.slice(i, i + n).join('');
+        if (joined.length <= 12) addTok(ko, joined);
+      }
+    }
+  }
+  // ⭐ 어근을 같이 넣는다 — 부분일치라 「문의하기」는 「문의처」에 안 걸린다
+  for (const t of [...ko]) if (t.length >= 3 && !STOP.has(t.slice(0, 2))) ko.add(t.slice(0, 2));
+  return ko;
+}
+// ⭐ 파일명·식별자는 한글 토큰에 안 걸린다 — 경로는 따로 본다.
+// ⛔ 길이 5 이상만 받으면 ESG·SAP·EAP 같은 3글자 약어가 통째로 사라진다(2026-09-05 실측).
+//    대문자 약어는 2자부터, 소문자 섞인 일반 단어는 5자부터 — 흔한 영어 낱말이 노이즈가 되는 건 막는다.
+export function tokenizeIds(prompt) {
+  return [...new Set([
+    ...(prompt.match(/\b[A-Z][A-Z0-9]{1,}\b/g) || []),
+    ...(prompt.match(/[A-Za-z_][A-Za-z0-9_.\-]{3,}/g) || []).filter((t) => t.length >= 5),
+  ])];
+}
 
 // 요구·용어에 질의어가 몇 개 걸리는지로 점수를 낸다. 부분 문자열 매칭 — 한국어는 어미가 붙으므로.
 // ⛔ 합계만으로는 「정확일치 1건」과 「흔한 말이 세 군데 스침」을 구분할 수 없다 — 둘 다 3점이다.
@@ -69,7 +111,7 @@ export function findByFile(recs, needle) {
 export function index(recs) {
   const out = recs.map((r, i) => ({ ...r, seq: i + 1 }));
   for (const r of out) {
-    const heirs = out.filter((x) => x.supersedes === r.req);
+    const heirs = out.filter((x) => sup(x).includes(r.req));
     if (heirs.length) {
       r.supersededBy = heirs[0];
       r.validTo = heirs[0].recorded || heirs[0].date;  // 이 기록이 낡은 시점
@@ -103,26 +145,27 @@ export function check(recs, { fileExists } = {}) {
   const problems = [];
 
   for (const r of recs) {
-    if (!r.supersedes) continue;
-    const old = byReq.get(r.supersedes);
-    if (!old) { problems.push(['고아 대체', `줄${r.seq} ${r.req.slice(0, 40)} → 「${r.supersedes.slice(0, 40)}」 (그런 기록 없음)`]); continue; }
-    if (old.seq >= r.seq) problems.push(['기록순 역행', `줄${r.seq} 가 줄${old.seq} 을 대체 — 나중 것이 먼저 기록될 수 없다`]);
-    if (old.req === r.req) problems.push(['자기 대체', `줄${r.seq} ${r.req.slice(0, 40)}`]);
-    // ⛔ 소급 기록 함정 — 과거를 나중에 append 하면 기록순은 정상이라 위 검사를 통과하지만,
-    //    세상시간으로는 과거가 최신을 무효화하는 셈이 된다(2026-09-04 실측: 08-19 가 08-26 을 대체).
-    if (r.date && old.date && r.date < old.date) {
-      problems.push(['세상시간 역행', `${r.date} 기록이 더 최신인 ${old.date} 을 대체 — 소급 기록에는 supersedes 를 붙이지 않는다`]);
+    for (const s of sup(r)) {
+      const old = byReq.get(s);
+      if (!old) { problems.push(['고아 대체', `줄${r.seq} ${r.req.slice(0, 40)} → 「${s.slice(0, 40)}」 (그런 기록 없음)`]); continue; }
+      if (old.seq >= r.seq) problems.push(['기록순 역행', `줄${r.seq} 가 줄${old.seq} 을 대체 — 나중 것이 먼저 기록될 수 없다`]);
+      if (old.req === r.req) problems.push(['자기 대체', `줄${r.seq} ${r.req.slice(0, 40)}`]);
+      // ⛔ 소급 기록 함정 — 과거를 나중에 append 하면 기록순은 정상이라 위 검사를 통과하지만,
+      //    세상시간으로는 과거가 최신을 무효화하는 셈이 된다(2026-09-04 실측: 08-19 가 08-26 을 대체).
+      if (r.date && old.date && r.date < old.date) {
+        problems.push(['세상시간 역행', `${r.date} 기록이 더 최신인 ${old.date} 을 대체 — 소급 기록에는 supersedes 를 붙이지 않는다`]);
+      }
     }
   }
   const dupes = new Map();
-  for (const r of recs) if (r.supersedes) dupes.set(r.supersedes, (dupes.get(r.supersedes) || 0) + 1);
+  for (const r of recs) for (const s of sup(r)) dupes.set(s, (dupes.get(s) || 0) + 1);
   for (const [req, n] of dupes) if (n > 1) problems.push(['중복 대체', `「${req.slice(0, 40)}」 를 ${n}개 기록이 대체한다 — 사슬이 갈라진다`]);
 
   // 경로가 사라졌으면 그래프가 코드보다 낡은 것이다.
   // ⛔ 대체된 기록은 빼고 본다 — 경로가 없어진 것이 바로 대체된 이유인 경우가 많아 영구 오탐이 된다
   //    (실측 2026-09-06: 스킬 이름 변경으로 죽은 옛 경로가 --check 를 계속 exit 1 로 만들었다).
   //    ⚠️ 경고가 늘 켜져 있으면 사람이 무시하게 되고, 그러면 검사가 없는 것과 같다.
-  const superseded = new Set(recs.filter((r) => r.supersedes).map((r) => r.supersedes));
+  const superseded = new Set(recs.flatMap(sup));
   const gone = [];
   if (fileExists) {
     for (const r of recs) {
@@ -152,16 +195,24 @@ export function check(recs, { fileExists } = {}) {
     const newest = [...v].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
     if (String(top.date) < String(newest.date)) stale.push({ k, top, newest, n: v.length });
   }
-  return { problems, gone, noRecorded, retro, stale, dupTerms: [...owners.values()].filter((v) => v.length > 1).length };
+  // ⛔ 열린 작업 표식(⏸) 누락 — 훅이 상태로 붙여 주는 대상이라 표식이 없으면 조용히 안 나간다.
+  //    실측 2026-09-15: 보류 기록이 재개 요청에서 10위라 랭킹으로는 못 닿았다. 표식이 유일한 경로다.
+  //    ⭐ 「하다 말았다」는 기계가 못 정하므로 낱말로 후보만 올리고 판정은 사람이 한다.
+  //    ⛔ 표식은 note 맨 앞에서만 인정한다 — 본문 어디서나 찾으면 이 규약을 설명하는 기록이 스스로 걸린다.
+  const OPEN_WORD = /미구현|구현 보류|「일단 대기」|중단됨/;
+  const unmarked = recs.filter((r) => !superseded.has(r.req) && !(r.note || '').startsWith('⏸') &&
+    OPEN_WORD.test([r.req, r.note || '', ...Object.values(Array.isArray(r.terms) ? {} : r.terms || {})].join(' ')));
+
+  return { problems, gone, noRecorded, retro, stale, unmarked, dupTerms: [...owners.values()].filter((v) => v.length > 1).length };
 }
 
 if (process.argv[1] && process.argv[1].endsWith('graph-find.mjs')) {
-  const args = process.argv.slice(2);
+  let args = process.argv.slice(2);
   const recs = index(load());
 
   if (!recs.length) { console.log('기록이 없다. tools/graph-append.mjs 로 먼저 쌓는다.'); process.exit(0); }
   if (!args.length) {
-    console.error('사용법: node tools/graph-find.mjs <용어…>  |  --files <경로조각>  |  --with <경로조각>  |  --check  |  --promote [정본문서]');
+    console.error('사용법: node tools/graph-find.mjs <용어…>  |  --files <경로조각>  |  --with <경로조각>  |  --open  |  --check  |  --promote [정본문서]');
     console.error(`현재 누적 ${recs.length}건`);
     process.exit(1);
   }
@@ -230,9 +281,18 @@ if (process.argv[1] && process.argv[1].endsWith('graph-find.mjs')) {
     process.exit(0);
   }
 
+  // ⭐ 열린 작업 목록 — 훅은 주제가 겹칠 때만 붙여 주므로, 「뭐 하다 말았나」는 여기서 본다.
+  if (args[0] === '--open') {
+    const gone2 = new Set(recs.flatMap(sup));
+    const open = recs.filter((r) => !gone2.has(r.req) && (r.note || '').startsWith('⏸'));
+    console.log(open.length ? `⏸ 열린 작업 ${open.length}건` : '열린 작업 없음.');
+    for (const r of open) console.log(`\n⏸ ${r.date} ${r.req}\n   ${r.note || ''}`);
+    process.exit(0);
+  }
+
   // 무결성 검증 — 문자열 참조로 잇는 구조의 유일한 약점을 시끄럽게 만든다.
   if (args[0] === '--check') {
-    const { problems, gone, noRecorded, retro, stale, dupTerms } = check(recs, { fileExists: (f) => existsSync(f) });
+    const { problems, gone, noRecorded, retro, stale, unmarked, dupTerms } = check(recs, { fileExists: (f) => existsSync(f) });
     console.log(`기록 ${recs.length}건 · 대체 사슬 ${recs.filter((r) => r.supersedes).length}건\n`);
     console.log('── 사슬 무결성 ──');
     if (!problems.length) console.log('  이상 없음.');
@@ -248,6 +308,12 @@ if (process.argv[1] && process.argv[1].endsWith('graph-find.mjs')) {
       console.log(`       최신 : ${x.newest.req.slice(0, 60)}`);
       console.log(`       ⇒ 1위 기록의 값이 낡았으면 supersedes 로 무효화하거나 그 용어 키를 뺀다`);
     }
+    console.log('\n── 열린 작업 표식 (하다 만 것이 훅에 잡히나) ──');
+    if (!unmarked.length) console.log('  이상 없음 — 표식 누락 후보 없음.');
+    for (const r of unmarked) {
+      console.log(`  ⚠️ ${r.date} ${r.req.slice(0, 56)}`);
+      console.log(`       ⇒ 아직 하다 만 것이면 note 앞에 ⏸ 를 붙인다 (훅이 순위 밖이어도 붙여 준다). 끝난 것이면 그냥 둔다`);
+    }
     console.log('\n── 시간 ──');
     console.log(`  recorded 없음 ${noRecorded.length}건 (구 기록 — 순서는 줄 번호로 판정한다)`);
     console.log(`  소급 기록 ${retro.length}건 (date < recorded — 정상이다, 과거를 나중에 적은 것)`);
@@ -257,17 +323,33 @@ if (process.argv[1] && process.argv[1].endsWith('graph-find.mjs')) {
   // 동점이면 살아있는 기록 먼저, 그다음 최신.
   // ⛔ 대체된 기록이 1위를 차지하면 새 세션이 낡은 값을 그대로 답한다 — --check 의 「용어 선점」은
   //    용어 키가 겹칠 때만 잡아서, 자유 검색어로 물으면 이 구멍으로 빠졌다(2026-09-08 실측).
-  const ranked = recs.map((r) => ({ r, s: score(r, args) })).filter((x) => x.s > 0)
+  // ⛔ 대체된 기록은 기본 제외한다 — 동점 뒤로 보내는 것만으로는 부족했다(2026-09-14 실측: 문장 질의에서 본문이 긴
+  //    대체 기록이 10점으로 정본 6점을 눌러 1위). 훅은 이미 제외하고 있고 후속 기록이 반드시 있어 재현율 손실 0.
+  //    이력 절은 그대로 사슬 전체를 보여준다. 대체 기록까지 검색하려면 --all.
+  const all = args.includes('--all');
+  args = args.filter((a) => a !== '--all');
+  const pool = all ? recs : recs.filter((r) => !r.validTo);
+  const rank = (qs) => pool.map((r) => ({ r, s: score(r, qs) })).filter((x) => x.s > 0)
     .sort((a, b) => b.s - a.s
       || (a.r.validTo ? 1 : 0) - (b.r.validTo ? 1 : 0)
       || String(b.r.date).localeCompare(String(a.r.date)));
+  let queries = args;
+  let ranked = rank(queries);
+  // ⭐ 문장을 통째로 넣으면 한 덩어리 부분일치라 0건이 나와 「새 영역이다」로 오도했다(2026-09-14 실측).
+  //    0건이고 인자에 공백이 있으면 훅과 같은 토크나이저로 나눠 다시 찾는다. 어근 인자의 동작은 그대로다.
+  if (!ranked.length && args.some((a) => /\s/.test(a))) {
+    const sentence = args.join(' ');
+    queries = [...tokenizeKo(sentence), ...tokenizeIds(sentence)];
+    ranked = rank(queries);
+    if (ranked.length) console.log(`(문장을 토큰 ${queries.length}개로 나눠 다시 찾았다)\n`);
+  }
   if (!ranked.length) {
     console.log(`「${args.join(' ')}」로 걸리는 과거 요구가 없다 (누적 ${recs.length}건).`);
     console.log('⇒ 새 영역이다. spec-map.md 어휘 다리와 trace.mjs 로 시작한다.');
     process.exit(0);
   }
 
-  console.log(`유사 요구 ${ranked.length}건 (누적 ${recs.length}건 중)\n`);
+  console.log(`유사 요구 ${ranked.length}건 (누적 ${recs.length}건 중${all ? '' : ', 대체된 기록 제외 — 전부 보려면 --all'})\n`);
   for (const { r, s } of ranked.slice(0, 5)) {
     console.log(`[점수 ${s}] ${r.date}  ${r.req}${stale(r)}`);
     const pairs = termPairs(r);
@@ -290,7 +372,7 @@ if (process.argv[1] && process.argv[1].endsWith('graph-find.mjs')) {
     hist.forEach((r, i) => {
       console.log(`  ${r.date}  ${i === 0 ? '⭐최신' : r.validTo ? '⚠️낡음' : '     '}  ${r.req}`);
       if (r.validTo) console.log(`            ↓ ${r.validTo} 에 대체됨: ${r.supersededBy.req.slice(0, 46)}`);
-      if (r.supersedes) console.log(`            ↑ 이전을 대체: ${r.supersedes}`);
+      if (sup(r).length) console.log(`            ↑ 이전을 대체: ${sup(r).join(' · ')}`);
     });
     console.log('⚠️ 최신 것부터 본다 — 아래쪽은 그 뒤에 바뀌었을 수 있다.\n');
   }

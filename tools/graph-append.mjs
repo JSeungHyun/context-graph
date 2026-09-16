@@ -8,6 +8,7 @@
 //    "files":["src/main/webapp/WEB-INF/view/goal/goal_list_appr.jsp"],
 //    "note":"국내/해외 짝 둘 다 고쳐야 했다"}
 //   EOF
+//   ⭐ "supersedes" 는 문자열 1개 또는 배열 — 조각 여러 건을 정본 1건으로 통합할 때 배열을 쓴다(2026-09-14).
 //
 // ⭐ date 는 세상 시간(작업이 일어난 때), recorded 는 기록 시간(이 줄을 쓴 때) — 둘 다 자동으로 오늘이 들어간다.
 //    과거를 소급 기록할 때만 date 를 직접 준다. 검증은 node tools/graph-find.mjs --check.
@@ -42,7 +43,8 @@ export function normalize(rec, today) {
     ...(strs(rec.tables).length ? { tables: strs(rec.tables) } : {}),   // apms.xxx 테이블
     files: paths(rec.files),
     // ⭐ 이 작업이 이전 기록을 무효화하면 그 req 를 적는다. 별개 작업이면 비운다.
-    ...(rec.supersedes ? { supersedes: String(rec.supersedes) } : {}),
+    // ⭐ 문자열 1개 또는 배열 — 조각 여러 건을 정본 1건으로 통합할 때 배열(2026-09-14). 읽는 쪽은 graph-find 의 sup().
+    ...(rec.supersedes ? { supersedes: Array.isArray(rec.supersedes) ? strs(rec.supersedes) : String(rec.supersedes) } : {}),
     ...(rec.note ? { note: rec.note } : {}),
   };
 }

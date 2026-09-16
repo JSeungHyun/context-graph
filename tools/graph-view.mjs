@@ -37,7 +37,7 @@ const dates = recs.map((r) => r.date).filter(Boolean).sort();
 const tableCount = new Set(recs.flatMap((r) => r.tables || [])).size;
 
 function card(r, i) {
-  const sup = r.supersedes ? recs.find((x) => x.req === r.supersedes) : null;
+  const sups = [].concat(r.supersedes || []).map((s) => recs.find((x) => x.req === s) || s);   // 배열 supersedes(2026-09-14)
   const hay = [r.req, ...pairs(r).flat(), ...(r.files || []), ...(r.tables || []), r.note || ''].join(' ').toLowerCase();
   const parts = [];
   parts.push('<header class="rec-hd"><time datetime="' + e(r.date) + '">' + e(r.date) + '</time><h3>' + e(r.req) + '</h3></header>');
@@ -53,8 +53,10 @@ function card(r, i) {
       '<li><button type="button" class="fpath" data-f="' + e(f) + '"><span class="ext">' + e(ext(f)) + '</span>' + e(f) + '</button></li>').join('') + '</ul>');
   }
   if (r.note) parts.push('<p class="note">' + e(r.note) + '</p>');
-  if (sup) parts.push('<p class="sup">대체 <a href="#r' + recs.indexOf(sup) + '">' + e(sup.date) + ' ' + e(sup.req) + '</a></p>');
-  else if (r.supersedes) parts.push('<p class="sup orphan">대체 ' + e(r.supersedes) + ' <span class="unset">(기록 없음)</span></p>');
+  for (const s of sups) {
+    if (typeof s === 'string') parts.push('<p class="sup orphan">대체 ' + e(s) + ' <span class="unset">(기록 없음)</span></p>');
+    else parts.push('<p class="sup">대체 <a href="#r' + recs.indexOf(s) + '">' + e(s.date) + ' ' + e(s.req) + '</a></p>');
+  }
   return '<article class="rec' + (r.supersedes ? ' chained' : '') + '" data-hay="' + e(hay) + '" id="r' + i + '">'
     + parts.join('') + '</article>';
 }
