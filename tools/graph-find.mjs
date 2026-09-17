@@ -73,6 +73,32 @@ export function tokenizeIds(prompt) {
 // ⛔ 합계만으로는 「정확일치 1건」과 「흔한 말이 세 군데 스침」을 구분할 수 없다 — 둘 다 3점이다.
 //    그 탓에 노이즈가 문턱을 넘어 2단 색인을 막았다(2026-09-04 실측: 정확일치 0인 기록 3건이 3점).
 //    ⇒ 종류를 같이 돌려준다. 판정은 부르는 쪽이 한다.
+// ⭐ 제목 머리를 용어 키처럼 취급한다 — req 가 질의와 거의 같아도 본문 1점밖에 못 받아
+//    확신 게이트(5점)를 못 넘던 문제(2026-09-17 실측: 「문의하기 정보 수정」 티켓이 3점이라 침묵).
+//    ⛔ 4자 n-gram 은 「정보수정」처럼 흔한 조각이 엉뚱한 기록에 걸린다 — 5자 이상만 쓴다(실측으로 오탐 1건 제거).
+//    A/B(티켓 497건·자기검색·typed 283건): 확신 424→426, 자기검색 121→122, typed 208 불변(주입량 증가 0).
+//    ⛔ 같이 잰 「게이트 5→4」는 다시 기각했다 — 확신은 424→462 로 뛰지만 새로 확신한 38건을 읽으니 맞는 것이 5건 안팎(~15%)이었다.
+const TITLE_PREFIX = /^(정본|용어 사전|용어 학습|공백 채움|공백 목록|정정|Dooray 원문)\s*:\s*/;
+const TITLE_CACHE = new WeakMap();
+export function titleKeys(rec) {
+  let v = TITLE_CACHE.get(rec);
+  if (v) return v;
+  const head = String(rec.req || '').replace(TITLE_PREFIX, '').split(/[—(\[:]/)[0].trim();
+  v = [];
+  if (head.length >= 4) {
+    v.push(head.toLowerCase().replace(/\s+/g, ''));
+    const parts = head.split(/\s+/).filter((w) => /^[가-힣A-Za-z0-9]{2,}$/.test(w));
+    for (let i = 0; i < parts.length; i++)
+      for (let n = 2; n <= 3 && i + n <= parts.length; n++) {
+        const j = parts.slice(i, i + n).join('').toLowerCase();
+        if (j.length >= 5 && j.length <= 16) v.push(j);
+      }
+    v = [...new Set(v)];
+  }
+  TITLE_CACHE.set(rec, v);
+  return v;
+}
+
 export function scoreDetail(rec, queries) {
   const keys = termKeys(rec);
   const hay = [rec.req, keys.join(' '), termPairs(rec).map(([, v]) => v).join(' '),
@@ -92,6 +118,7 @@ export function scoreDetail(rec, queries) {
     //    용어키→소유 기록 1위 56%→76%, req 자기검색 103/106 불변. 채점 가중이 아니라 판정 정규화다.
     const tn = t.replace(/\s+/g, '');
     if (keys.some((x) => x.toLowerCase().replace(/\s+/g, '') === tn)) { s += 3; exact++; }   // 용어 정확 일치
+    else if (titleKeys(rec).includes(tn)) { s += 3; exact++; }          // 제목 머리 일치 (위 주석)
     else if (paths.includes(t)) { s += 2; near++; }                     // 경로가 직접 지목
     else if (hay.includes(t)) { s += 1; body++; }                       // 본문·매핑값·테이블 포함
     else if (noteTxt.includes(t)) { s += 1; body++; }                   // 함정 본문에 스침

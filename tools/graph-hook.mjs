@@ -62,15 +62,51 @@ function emit(prompt) {
     `⛔ 값이 「제거됨」·「바뀜」으로 시작하면 그게 답이다. 코드에 안 보인다고 「모름」이라 하지 않는다.`,
     `⭐ 다만 위 기록이 이 질문에 답하지 않으면 그렇다고 말하고 평소대로 코드를 탐색한다 — 걸린 것이 답이라는 뜻은 아니다.`];
   for (const { r, s } of hits.slice(0, take)) {
-    out.push(`· [${s}] ${r.date} ${r.req}`);
+    out.push(`· [${kindOf(r)} · ${s}점] ${r.date} ${r.req}`);
     // ⭐ 함정을 맨 앞에 둔다 — 카드 끝에 두면 묻혀서 모델이 추측으로 답한다(2026-09-04 실측)
     if (r.note) out.push(`    ⚠️ 함정: ${r.note}`);
-    for (const [k, v] of Object.entries(Array.isArray(r.terms) ? {} : r.terms || {})) out.push(`    ${k} → ${v}`);
+    const { hit, rest } = splitTerms(r, [...ko, ...ids]);
+    for (const [k, v] of hit) out.push(`    ${k} → ${v}`);
+    if (rest.length) out.push(`    … 이 질의와 안 걸린 항목 ${rest.length}개(키만): ${rest.map(([k]) => k).join(' · ')}`);
     for (const f of (r.files || []).slice(0, 6)) out.push(`    ${f}`);
   }
   out.push(...openWork(recs, [...ko, ...ids], hits.slice(0, take).map((h) => h.r)));
   out.push(`더 볼 것: node tools/graph-find.mjs <어근>  (어근은 짧게, 여러 개)`);
   console.log(out.join('\n'));
+}
+
+// ⭐ 카드 **안에서도** 고른다 — 항목 단위 선택이 없어 카드 한 장의 항목 46%가 질의와 무관하게 나갔다
+//    (실측 2026-09-16, 확신 카드 441장: 평균 항목 14.5개 중 걸린 것 7.9개. 글자로는 35%).
+// ⛔ 잘라내지 않는다. 안 걸린 항목에 정답이 있을 수 있고 그 비율은 라벨이 없어 측정 못 했다 — **키만 남긴다.**
+//    모델이 필요하면 그 키로 graph-find 를 판다. 하나도 안 걸리면 전부 낸다(질의가 req·파일·함정으로만 맞은 경우).
+// ⛔ 이 판정을 **기록 선택에 되먹이지 않는다** — 그 순간 채점 변경이고, 이 저장소에서 채점 변경은 6/6 회귀했다.
+function splitTerms(rec, toks) {
+  const pairs = Object.entries(Array.isArray(rec.terms) ? {} : rec.terms || {});
+  const hit = [], rest = [];
+  for (const [k, v] of pairs) {
+    const nk = k.toLowerCase().replace(/\s+/g, '');
+    const text = (k + ' ' + v).toLowerCase();
+    const on = toks.some((t) => t.toLowerCase().replace(/\s+/g, '') === nk || text.includes(t.toLowerCase()));
+    (on ? hit : rest).push([k, v]);
+  }
+  return hit.length ? { hit, rest } : { hit: pairs, rest: [] };
+}
+
+// ⭐ 종류는 **제목에서 파생**한다 — 저장 필드를 만들지 않는다(살아있는 기록의 88%가 이 규칙으로 갈린다, 실측 2026-09-16).
+//    카드에 종류가 안 보여서 「이게 필요한 지식인지 작업 이력인지 구분이 안 된다」는 지적이 나왔다(사용자, 2026-09-16).
+// ⛔ 종류에 점수를 주지 않는다 — 표시 전용이다.
+const KINDS = [
+  ['절차', /^정본:/],
+  ['사전', /^용어 사전:|^용어 학습:|^공백 채움:|어휘 다리/],
+  ['원문', /^Dooray 원문|가이드문서|인수인계|연혁/],
+  ['폐기', /기각|철거|폐기|걷어|원복|중단|미실행|제거(했|됨|\b)|삭제했/],
+  ['도구', /^그래프|훅|도구|템플릿|미러|측정|스크립트|graph-|tools\//],
+  ['조사', /조사|확정|실측|분석|검증|교차검증|진단|점검|감사/],
+  ['이력', /수정|추가|구현|반영|적용|변경|개선|신설|분리|이관|통합/],
+];
+function kindOf(rec) {
+  for (const [k, re] of KINDS) if (re.test(rec.req)) return k;
+  return '기타';
 }
 
 // ⛔ 열린 작업(보류·미구현·중단)은 랭킹으로 닿지 않는다 — 광역 정본이 도메인 낱말을 독점한다.
